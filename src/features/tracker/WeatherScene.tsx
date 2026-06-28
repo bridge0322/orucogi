@@ -35,7 +35,7 @@ export function WeatherScene({ state, height = 236 }: WeatherSceneProps) {
       </div>
       <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 3, zIndex: 2 }}>
         {[0, 1, 2, 3].map((i) => (
-          <span key={i} style={{ fontSize: 15, opacity: i < state.level ? 1 : 0.28, filter: i < state.level ? "none" : "grayscale(1)" }}>🍖</span>
+          <span key={i} style={{ fontSize: 15, opacity: i < state.level ? 1 : 0.28, filter: i < state.level ? "none" : "grayscale(1)" }}>💧</span>
         ))}
       </div>
     </div>

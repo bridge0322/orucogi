@@ -15,6 +15,7 @@ export interface TrackerData {
   records: Record_[];
   xp: number;
   feasts: Feast[];
+  lastFed: number | null;
 }
 
 const STORE_KEY = "orucogi_personal_v1";
@@ -23,6 +24,7 @@ export function migrate(d: Partial<TrackerData> & Record<string, unknown>): Trac
   if (!d.records) d.records = [];
   if (typeof d.xp !== "number") d.xp = 0;
   if (!Array.isArray(d.feasts)) d.feasts = [];
+  if (typeof d.lastFed !== "number") d.lastFed = null;
   return d as TrackerData;
 }
 
@@ -36,11 +38,12 @@ export function loadData(): TrackerData {
   const now = Date.now(), day = 86400000;
   return migrate({
     records: [
-      { t: now - day * 30, principal: 900000, value: 1380000 },
-      { t: now, principal: 1236000, value: 1012000 },
+      { t: now - day * 30, principal: 1200000, value: 1300000 },
+      { t: now, principal: 1236000, value: 1384320 },
     ],
     xp: 0,
     feasts: [],
+    lastFed: null,
   });
 }
 

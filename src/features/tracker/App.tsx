@@ -7,18 +7,17 @@ import { BalanceCard } from "./BalanceCard";
 import { RecordSheet } from "./RecordSheet";
 import { ImportSheet } from "./ImportSheet";
 import { HistoryScreen } from "./HistoryScreen";
-import { FeastSheet } from "./FeastSheet";
+import { DailyFeedCard } from "./DailyFeedCard";
 import { FeastCelebration } from "./FeastCelebration";
 import { loadData, saveData } from "./logic/persistence";
 import type { TrackerData } from "./logic/persistence";
-import { crashState, peakOf, xpInLevel, xpLevel } from "./logic/feast";
+import { canFeedToday, feedStreak, peakOf, pickFood, xpInLevel, xpLevel } from "./logic/feast";
 import type { Food } from "./logic/feast";
 
-type SheetKind = "record" | "import" | "feast" | null;
+type SheetKind = "record" | "import" | null;
 
 interface FeastFx {
   food: Food;
-  amount: number;
   gainedXp: number;
 }
 
@@ -29,7 +28,8 @@ export function App() {
   const [feastFx, setFeastFx] = useState<FeastFx | null>(null);
   const cur = data.records[data.records.length - 1];
   const peak = peakOf(data.records);
-  const crash = crashState(cur.value, peak);
+  const canFeed = canFeedToday(data.lastFed);
+  const streak = feedStreak(data.feasts);
 
   useEffect(() => { saveData(data); }, [data]);
 
@@ -42,20 +42,18 @@ export function App() {
     setSheet(null);
   };
 
-  const feed = (amount: number) => {
-    const food = crash.food;
-    if (!food) return;
-    setSheet(null);
-    setData((d) => {
-      const prev = d.records[d.records.length - 1];
-      return {
-        ...d,
-        xp: (d.xp || 0) + food.xp,
-        feasts: [...(d.feasts || []), { t: Date.now(), food: food.name, rank: food.rank, amount }],
-        records: [...d.records, { t: Date.now(), principal: prev.principal + amount, value: prev.value + amount }],
-      };
-    });
-    setFeastFx({ food, amount, gainedXp: food.xp });
+  // ★ 1日1回のごはん。お金は動かさず、けいけんちとごはん回数だけ増える。
+  const feed = () => {
+    if (!canFeedToday(data.lastFed)) return;
+    const food = pickFood();
+    const now = Date.now();
+    setData((d) => ({
+      ...d,
+      xp: (d.xp || 0) + food.xp,
+      lastFed: now,
+      feasts: [...(d.feasts || []), { t: now, food: food.name, rank: food.rank, amount: 0 }],
+    }));
+    setFeastFx({ food, gainedXp: food.xp });
   };
 
   const lvl = xpLevel(data.xp);
@@ -72,7 +70,8 @@ export function App() {
       <main style={{ flex: 1, overflowY: "auto", padding: "0 20px 24px" }}>
         {tab === "home" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <Hero cur={cur} peak={peak} onFeed={() => setSheet("feast")} />
+            <Hero cur={cur} peak={peak} />
+            <DailyFeedCard canFeed={canFeed} streak={streak} onFeed={feed} />
             <BalanceCard cur={cur} />
             <Card elevation="sm" style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ width: 40, height: 40, flex: "none", borderRadius: "var(--radius-md)", background: "var(--brand-soft)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>⭐</div>
@@ -109,7 +108,6 @@ export function App() {
 
       {sheet === "record" && <RecordSheet cur={cur} onClose={() => setSheet(null)} onSave={addRecord} />}
       {sheet === "import" && <ImportSheet onClose={() => setSheet(null)} onSave={addRecord} />}
-      {sheet === "feast" && crash.food && <FeastSheet crash={crash} onClose={() => setSheet(null)} onConfirm={feed} />}
       {feastFx && <FeastCelebration {...feastFx} onDone={() => setFeastFx(null)} />}
     </div>
   );
