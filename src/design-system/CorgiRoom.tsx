@@ -18,7 +18,9 @@ export function CorgiRoom({ level, amount = 2000000, height = 360, onTap }: Corg
   const [mode, setMode] = useState<"walk" | "sit" | "idle">("walk");
   const [phase, setPhase] = useState(0);
   const [jump, setJump] = useState(0);
+  const [blink, setBlink] = useState(false);
   const targetX = useRef(0.5), modeTimer = useRef(0), jumpRef = useRef(0);
+  const blinkRef = useRef({ t: 2 + Math.random() * 3, on: false });
   const FLOOR_Y = 0.62;
 
   useEffect(() => {
@@ -35,6 +37,9 @@ export function CorgiRoom({ level, amount = 2000000, height = 360, onTap }: Corg
       setPhase((ph) => (ph + dt * 2.2) % 1);
       if (jumpRef.current > 0.01) { jumpRef.current *= 0.88; setJump(jumpRef.current); }
       else if (jumpRef.current !== 0) { jumpRef.current = 0; setJump(0); }
+      // ときどき まばたき（パチッと一瞬だけ目を閉じる）。
+      const b = blinkRef.current; b.t -= dt;
+      if (b.t <= 0) { b.on = !b.on; b.t = b.on ? 0.12 : 2.5 + Math.random() * 3.5; setBlink(b.on); }
       modeTimer.current -= dt;
       if (modeTimer.current <= 0) {
         const r = Math.random();
@@ -73,7 +78,7 @@ export function CorgiRoom({ level, amount = 2000000, height = 360, onTap }: Corg
       <div style={{ position: "absolute", left: "50%", bottom: "8%", width: "70%", height: 40, transform: "translateX(-50%)", background: "#F4C9C0", borderRadius: "50%", opacity: 0.7 }}/>
       <div style={{ position: "absolute", left: "22%", bottom: "12%", fontSize: 22 }}>🎾</div>
       <div onClick={handleTap} style={{ position: "absolute", left: px, top: floorPx - ch, width: corgiW, height: ch, transform: `scaleX(${dir})`, cursor: "pointer" }}>
-        <RoomCorgi level={lv} badge={ROOM_STAGES[lv - 1].badge} walkPhase={phase} state={mode} jump={jump}/>
+        <RoomCorgi level={lv} badge={ROOM_STAGES[lv - 1].badge} walkPhase={phase} state={mode} jump={jump} blink={blink}/>
       </div>
       {mode !== "walk" && (
         <div style={{ position: "absolute", left: px + corgiW * 0.5, top: floorPx - ch - 6, transform: "translateX(-50%)", background: "#fff", padding: "2px 10px", borderRadius: 999, fontSize: 16, border: "2px solid #F0E0C8", whiteSpace: "nowrap", pointerEvents: "none" }}>
