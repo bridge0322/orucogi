@@ -33,8 +33,8 @@ export interface LifeCorgiProps {
   silhouette?: boolean; // 遠吠えシルエット演出用
 }
 
-const OL = "#7A5230", TAN = "#E3A857", CREAM = "#FBEAD2", INNER = "#D89243",
-  EARSH = "#C77F35", DARK = "#3A2418", TONGUE = "#F08CA0", BLUSH = "#F3C2B6";
+const OL = "#7A5230", TAN = "#E3A857", CREAM = "#FBEAD2", INNER_EAR = "#FBE3C9",
+  DARK = "#3A2418", TONGUE = "#F08CA0", BLUSH = "#F3C2B6";
 
 // 寝相コレクション（SLEEP_STYLES と同じ並び）：まるまり／ぺたんこ／よこむき／まんまる／だらり。
 const SLEEP_XF = [
@@ -69,14 +69,16 @@ export function LifeCorgi(p: LifeCorgiProps) {
 
   // 毛色はつねに Phase 1 と同じ通常色（虹色は廃止）。
   const tan = TAN;
-  const inner = INNER;
   const bodyFill = p.silhouette ? "#2E2A45" : tan;
   const creamFill = p.silhouette ? "#3A3555" : CREAM;
   const olStroke = p.silhouette ? "#242038" : OL;
 
-  // 耳：もともと垂れ耳。ペタンはさらに外へ、ピクッは小さく回転。
+  // 耳：コーギーの立ち耳。ペタンはさらに外へ倒し、ピクッは小さく回転。
+  // 成長に合わせて earUp が上がるほど、耳がぴんと立つ（子犬はやや寝ている）。
   const earL = (p.earDown ? 16 : 0) + (p.earTwitchL || 0);
   const earR = -(p.earDown ? 16 : 0) + (p.earTwitchR || 0);
+  const earTipY = 18 + (1 - par.earUp) * 78;
+  const earOutX = (1 - par.earUp) * 26;
 
   // ポーズごとの全体変形
   let bodyXf = "";
@@ -217,16 +219,16 @@ export function LifeCorgi(p: LifeCorgiProps) {
         </g>
         {/* ---- 頭 ---- */}
         <g id={`head-${uid}`} transform={`${headXf} translate(200 150) scale(${0.78 + par.bodyScale * 0.22}) translate(-200 -150)`}>
-          <path className="lc-ol" fill={bodyFill} d="M200 60 C140 60 104 108 104 162 C104 214 146 244 200 244 C254 244 296 214 296 162 C296 108 260 60 200 60 Z" />
-          {/* 耳（左右で回転できる） */}
+          {/* 耳（コーギーの立ち耳・左右で回転できる）。頭の後ろに描いて、根もとは頭で隠す。 */}
           <g id={`earL-${uid}`} transform={`rotate(${earL} 150 82)`}>
-            <path className="lc-ol" fill={inner} d="M162 84 C148 90 142 106 140 130 C138 164 138 202 132 226 q-8 12 -18 5 q-10 -3 -15 -15 C86 198 72 188 72 160 C72 118 102 82 140 74 C150 71 158 76 162 84 Z" />
-            <path fill={EARSH} opacity={p.silhouette ? 0 : 0.45} d="M140 130 C138 164 140 200 148 222 q6 4 11 -2 C142 198 144 164 146 134 Z" />
+            <path className="lc-ol" fill={bodyFill} d={`M126 96 L${92 - earOutX} ${earTipY} L196 86 Z`} />
+            {!p.silhouette && <path fill={INNER_EAR} d={`M138 92 L${118 - earOutX * 0.6} ${earTipY + 24} L182 86 Z`} />}
           </g>
           <g id={`earR-${uid}`} transform={`rotate(${earR} 250 82)`}>
-            <path className="lc-ol" fill={inner} d="M238 84 C252 90 258 106 260 130 C262 164 262 202 268 226 q8 12 18 5 q10 -3 15 -15 C314 198 328 188 328 160 C328 118 298 82 260 74 C250 71 242 76 238 84 Z" />
-            <path fill={EARSH} opacity={p.silhouette ? 0 : 0.45} d="M260 130 C262 164 260 200 252 222 q-6 4 -11 -2 C258 198 256 164 254 134 Z" />
+            <path className="lc-ol" fill={bodyFill} d={`M274 96 L${308 + earOutX} ${earTipY} L204 86 Z`} />
+            {!p.silhouette && <path fill={INNER_EAR} d={`M262 92 L${282 + earOutX * 0.6} ${earTipY + 24} L218 86 Z`} />}
           </g>
+          <path className="lc-ol" fill={bodyFill} d="M200 60 C140 60 104 108 104 162 C104 214 146 244 200 244 C254 244 296 214 296 162 C296 108 260 60 200 60 Z" />
           <path fill={creamFill} d="M200 108 C184 108 175 140 177 176 C160 188 158 214 172 230 C186 248 214 248 228 230 C242 214 240 188 223 176 C225 140 216 108 200 108 Z" />
           {!p.silhouette && (p.blush || eyeK === "happy") && (
             <g id={`blush-${uid}`}>
