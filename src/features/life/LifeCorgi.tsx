@@ -154,7 +154,7 @@ export function LifeCorgi(p: LifeCorgiProps) {
       </defs>
       {/* 影は地面に固定（足元に密着）。ジャンプで体が上がるほど小さく薄くする */}
       <ellipse cx="200" cy={groundY + 8} rx={(56 - Math.min(40, lift) * 0.4) * par.bodyScale} ry={9 * par.bodyScale} fill="#000" opacity={Math.max(0.05, 0.14 - lift * 0.002)} />
-      <g transform={`translate(0 ${-lift - runBob}) ${bodyXf} translate(200 250) scale(0.86 1) translate(-200 -250)`}>
+      <g transform={`translate(0 ${-lift - runBob}) ${bodyXf}`}>
         {/* ---- 胴体 ---- */}
         <g id={`body-${uid}`} transform={`translate(0 ${sitDrop}) translate(200 250) scale(${par.bodyScale} ${par.bodyScale * par.bodyStretch}) translate(-200 -250)`}>
           {/* しっぽ */}
