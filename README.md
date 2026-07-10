@@ -43,19 +43,31 @@ npm run build
 
 ## 使い方
 
-1. `kuidaore.html` をブラウザで直接開く（`file://` でも可）。
+1. `kuidaore.html` をブラウザで直接開く（`file://` でも可・完全オフラインで動作）。
 2. 右上の ⚙️ から Anthropic の API キー（`sk-ant-...`）を入力（初回のみ）。
 3. 太鼓ボタンから料理写真を撮影 or アップロードすると採点開始。
+
+`kuidaore.html` は React / ReactDOM をインライン内蔵した**完全自己完結の単一ファイル**です。外部 CDN もビルドも不要で、そのまま開けば動きます（採点時のみ Anthropic API へ通信）。
 
 ## データ・プライバシー
 
 - 記録（日別の摂取kcal・ポイント・認定履歴）と API キーは、この端末の **localStorage にのみ保存**されます（キー: `kuidaore_v1` ほか）。
 - 採点時、画像は端末から Anthropic API へ直接送信されます（`anthropic-dangerous-direct-browser-access`）。中継サーバーはありません。
 
-## 技術
+## 技術・ソース
 
-- React 18 + Babel standalone（CDN）による単一 HTML。使用モデル: Claude Sonnet（vision）。
+- React 18（インライン内蔵）による自己完結の単一 HTML。実行時の外部依存なし。使用モデル: Claude Sonnet（vision）。
 - 配色は道頓堀ネオン風（赤×金×黒）。キャラ「ドン太郎」は実在の「くいだおれ太郎」（商標）とは配色・顔・衣装を変えたオリジナルです。
+- アプリ本体の編集用ソースは `kuidaore.src.jsx`（JSX）。編集したら次の手順で `kuidaore.html` を再生成できます:
+
+  ```bash
+  # 一時ディレクトリで（node が必要）
+  npm i @babel/standalone react@18 react-dom@18
+  # kuidaore.src.jsx を Babel（preset: react, runtime: classic）で変換し、
+  # react/react-dom の umd/*.production.min.js と結合して kuidaore.html を出力する
+  ```
+
+  ポイントは Babel を **classic ランタイム**（`{ runtime: 'classic' }`）で変換すること。既定の automatic ランタイムは `import ... from "react/jsx-runtime"` を吐き、`<script>` 直読み込みでは動きません。
 
 ## 免責（食い倒れ選手権）
 
