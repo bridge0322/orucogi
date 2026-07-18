@@ -5,10 +5,11 @@ import { Button } from "../../design-system/Button";
 import { SegmentedControl } from "../../design-system/SegmentedControl";
 import { Switch } from "../../design-system/Switch";
 import { feat } from "./features";
+import { personalityMeta } from "./mood";
 import { configureSound, playSound } from "./sound";
 import { DEFAULT_HOUSE_THRESHOLDS, withHonorific } from "./lifeState";
 import type { AnimLevel, Honorific, LifeState } from "./lifeState";
-import { applyTransferCode, downloadTransferCode, makeTransferCode } from "./transfer";
+import { applyTransferCode, downloadBackupJson, downloadTransferCode, makeTransferCode } from "./transfer";
 
 // せってい：よびな・毎月の積立日・アニメーションの強さ・データのひきつぎ。
 export interface SettingsScreenProps {
@@ -69,7 +70,7 @@ export function SettingsScreen({ life, setLife }: SettingsScreenProps) {
       <Card elevation="sm" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 900, fontSize: "var(--text-base)", color: "var(--text-strong)" }}>🐶 よびな</div>
         <div style={{ fontFamily: "var(--font-body)", fontSize: "var(--text-xs)", color: "var(--text-muted)", lineHeight: 1.6 }}>
-          ダックスフンドが よぶ なまえ。けいしょうは「ちゃん」「くん」「なし（呼び捨て）」から えらべるよ。
+          コーギーが よぶ なまえ。けいしょうは「ちゃん」「くん」「なし（呼び捨て）」から えらべるよ。
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="れい：ゆうり" maxLength={10}
@@ -92,17 +93,51 @@ export function SettingsScreen({ life, setLife }: SettingsScreenProps) {
         )}
       </Card>
 
+      {/* この子の性格（お迎えのときから決まっている個性・変更不可） */}
+      {life.personality && (
+        <Card elevation="sm" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ width: 44, height: 44, flex: "none", borderRadius: "var(--radius-md)", background: "var(--brand-soft)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>
+            {personalityMeta(life.personality).emoji}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: "var(--font-display)", fontWeight: 900, fontSize: "var(--text-base)", color: "var(--text-strong)" }}>
+              せいかく：{personalityMeta(life.personality).label}
+            </div>
+            <div style={{ fontFamily: "var(--font-body)", fontSize: "var(--text-xs)", color: "var(--text-muted)", marginTop: 2, lineHeight: 1.5 }}>
+              {personalityMeta(life.personality).desc}
+            </div>
+          </div>
+        </Card>
+      )}
+
       <Card elevation="sm" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 900, fontSize: "var(--text-base)", color: "var(--text-strong)" }}>🎉 まいつきの つみたて日</div>
         <div style={{ fontFamily: "var(--font-body)", fontSize: "var(--text-xs)", color: "var(--text-muted)", lineHeight: 1.6 }}>
-          この日に ひらくと、ダックスフンドが おいわい してくれるよ。
+          この日に ひらくと、コーギーが おいわい してくれるよ。ふくすう とうろくOK。
+          31にち など「その月に ない日」は 月末に おいわいするよ。まえの日には よこくも してくれる。
         </div>
+        {(life.settleDays ?? []).length > 0 && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {[...(life.settleDays ?? [])].sort((a, b) => a - b).map((d) => (
+              <button key={d} type="button"
+                onClick={() => setLife((s) => ({ ...s, settleDays: (s.settleDays ?? []).filter((x) => x !== d) }))}
+                aria-label={`毎月${d}日を削除`}
+                style={{ minHeight: 40, padding: "8px 12px", borderRadius: 999, border: "2px solid var(--brand)", background: "var(--brand-soft)", fontFamily: "var(--font-body)", fontWeight: 800, fontSize: "var(--text-sm)", color: "var(--text-brand)", cursor: "pointer", WebkitTapHighlightColor: "transparent" }}>
+                まいつき {d}にち ×
+              </button>
+            ))}
+          </div>
+        )}
         <select
-          value={life.settleDay ?? ""}
-          onChange={(e) => setLife((s) => ({ ...s, settleDay: e.target.value === "" ? null : +e.target.value }))}
+          value=""
+          onChange={(e) => {
+            const d = +e.target.value;
+            if (!d) return;
+            setLife((s) => ({ ...s, settleDays: (s.settleDays ?? []).includes(d) ? (s.settleDays ?? []) : [...(s.settleDays ?? []), d] }));
+          }}
           style={{ padding: "12px 14px", minHeight: 48, borderRadius: "var(--radius-md)", border: "2px solid var(--border-strong)", fontFamily: "var(--font-body)", fontSize: "var(--text-base)", background: "var(--surface-card)", color: "var(--text-body)", outline: "none" }}
         >
-          <option value="">せっていしない</option>
+          <option value="">＋ 日にちを ついか</option>
           {Array.from({ length: 31 }).map((_, i) => (
             <option key={i + 1} value={i + 1}>まいつき {i + 1}にち</option>
           ))}
@@ -191,9 +226,14 @@ export function SettingsScreen({ life, setLife }: SettingsScreenProps) {
         </div>
 
         {/* つくる（バックアップ） */}
-        <Button variant="secondary" size="md" fullWidth onClick={makeCode}>
-          ひきつぎコードを つくる
-        </Button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="secondary" size="md" fullWidth style={{ whiteSpace: "nowrap", padding: "12px 8px" }} onClick={makeCode}>
+            ひきつぎコードを つくる
+          </Button>
+          <Button variant="secondary" size="md" fullWidth style={{ whiteSpace: "nowrap", padding: "12px 8px" }} onClick={downloadBackupJson} iconLeft={<i className="ph ph-download-simple" />}>
+            バックアップを ほぞん
+          </Button>
+        </div>
         {exportCode && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <textarea readOnly value={exportCode} onFocus={(e) => e.currentTarget.select()} rows={3} style={taS} />
@@ -246,7 +286,8 @@ export function SettingsScreen({ life, setLife }: SettingsScreenProps) {
       </Card>
 
       <div style={{ fontFamily: "var(--font-body)", fontSize: "var(--text-xs)", color: "var(--text-muted)", textAlign: "center", lineHeight: 1.6 }}>
-        なつき度：{life.bond}／100 ・ れんぞく {life.streak}日<br />
+        なつき度：{life.bond}／100 ・ れんぞく {life.streak}日 ・ お休み券 {life.restTickets ?? 0}枚<br />
+        （お休み券は 毎月1枚もらえて、1日あいても れんぞくを まもってくれるよ）<br />
         データは この端末にだけ ほぞんされます。
       </div>
     </div>

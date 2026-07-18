@@ -27,7 +27,7 @@ export function letterText(s: LifeState, month: string, records: Record_[]): str
     "らいげつも まいにち あいに きてね。",
     "だいすきだよ。",
     "",
-    "         あなたの ダックスフンドより 🐾",
+    "         あなたの コーギーより 🐾",
   ];
   return lines.join("\n");
 }

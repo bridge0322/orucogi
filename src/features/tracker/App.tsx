@@ -17,9 +17,13 @@ import { roomLevelFromAmount } from "./logic/roomStages";
 // ---- 生きているコーギー レイヤー ----
 import { CompanionStage } from "../life/CompanionStage";
 import type { ValueDelta } from "../life/CompanionStage";
-import { beginVisit, loadLife, saveLife } from "../life/lifeState";
+import { beginVisit, callName, loadLife, saveLife } from "../life/lifeState";
+import { rollPersonality } from "../life/mood";
 import { Onboarding } from "../life/Onboarding";
 import { DiaryScreen } from "../life/DiaryScreen";
+import { MissionCard } from "../life/MissionCard";
+import { AbsenceCard } from "../life/AbsenceCard";
+import { RecordNudge } from "./RecordNudge";
 import { SettingsScreen } from "../life/SettingsScreen";
 import { DebugPanel } from "../life/DebugPanel";
 import { isDebug } from "../life/features";
@@ -56,6 +60,9 @@ export function App() {
   const [feastFx, setFeastFx] = useState<FeastFx | null>(null);
   const cur = data.records.length ? data.records[data.records.length - 1] : null;
   const peak = peakOf(data.records);
+  // 前回の評価額を記録してからの日数。3日以上あいたら、そっと記録をうながす。
+  const daysSinceRecord = cur ? Math.floor((Date.now() - cur.t) / 86400000) : 0;
+  const showNudge = cur != null && daysSinceRecord >= 3;
   const canFeed = canFeedToday(data.lastFed);
   const streak = feedStreak(data.feasts);
 
@@ -66,11 +73,11 @@ export function App() {
   const prm = useMemo(() => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches, []);
   const animLevel = life.animLevel ?? (prm ? "min" : "full");
 
-  const addRecord = ({ principal, value }: { principal: number | null; value: number }) => {
+  const addRecord = ({ principal, value, units, nav }: { principal: number | null; value: number; units?: number; nav?: number }) => {
     setData((d) => {
       const prev = d.records.length ? d.records[d.records.length - 1] : null;
       const p = principal == null ? (prev ? prev.principal : value) : principal;
-      return { ...d, records: [...d.records, { t: Date.now(), principal: p, value }] };
+      return { ...d, records: [...d.records, { t: Date.now(), principal: p, value, units, nav }] };
     });
     setSheet(null);
   };
@@ -111,17 +118,27 @@ export function App() {
     <div className={life.animLevel == null ? "anim-auto" : undefined} style={{ maxWidth: 480, margin: "0 auto", minHeight: "100vh", background: "var(--surface-app)", display: "flex", flexDirection: "column" }}>
       <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "calc(12px + env(safe-area-inset-top,0px)) 20px 12px" }}>
         <h1 style={{ margin: 0, fontFamily: "var(--font-display)", fontWeight: 900, fontSize: "var(--text-2xl)", color: "var(--text-strong)" }}>オルコギ</h1>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, fontFamily: "var(--font-body)", fontSize: "var(--text-xs)", color: "var(--text-brand)", fontWeight: 800 }}>
-          <i className="ph-fill ph-star" /> おやつLv.{lvl}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: "var(--font-body)", fontSize: "var(--text-xs)", color: "var(--text-brand)", fontWeight: 800 }}>
+          {life.streak >= 2 && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 3, background: "var(--brand-soft)", borderRadius: 999, padding: "3px 9px" }}>
+              🔥 {life.streak}日
+            </span>
+          )}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+            <i className="ph-fill ph-star" /> おやつLv.{lvl}
+          </span>
         </div>
       </header>
 
       <main style={{ flex: 1, overflowY: "auto", padding: "0 20px 24px" }}>
         {tab === "home" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {life.pendingAbsence != null && life.pendingAbsence >= 2 && <AbsenceCard life={life} setLife={setLife} />}
+            {showNudge && <RecordNudge days={daysSinceRecord} name={callName(life)} onRecord={() => setSheet("record")} />}
             {cur ? (
               <>
                 <Hero cur={cur} peak={peak} scene={stage} />
+                <MissionCard life={life} setLife={setLife} />
                 <DailyFeedCard canFeed={canFeed} streak={streak} onFeed={feed} />
                 <BalanceCard cur={cur} />
               </>
@@ -133,6 +150,7 @@ export function App() {
                     まだ記録がありません。<br />「記録する」か「取り込む」で、最初の金額を入力してね 🐾
                   </div>
                 </Card>
+                <MissionCard life={life} setLife={setLife} />
                 <DailyFeedCard canFeed={canFeed} streak={streak} onFeed={feed} />
               </>
             )}
@@ -161,7 +179,7 @@ export function App() {
             </div>
           </div>
         )}
-        {tab === "history" && <HistoryScreen data={data} />}
+        {tab === "history" && <HistoryScreen data={data} life={life} />}
         {tab === "diary" && <DiaryScreen life={life} setLife={setLife} records={data.records} />}
         {tab === "settings" && <SettingsScreen life={life} setLife={setLife} />}
       </main>
@@ -176,7 +194,7 @@ export function App() {
       {sheet === "record" && <RecordSheet cur={cur} onClose={() => setSheet(null)} onSave={addRecord} />}
       {sheet === "import" && <ImportSheet onClose={() => setSheet(null)} onSave={addRecord} />}
       {feastFx && <FeastCelebration {...feastFx} onDone={() => setFeastFx(null)} />}
-      {!life.onboarded && <Onboarding onDone={(name, honorific) => setLife((s) => ({ ...s, name, honorific, onboarded: true }))} />}
+      {!life.onboarded && <Onboarding onDone={(name, honorific) => setLife((s) => ({ ...s, name, honorific, onboarded: true, adoptedDay: s.adoptedDay ?? dayKey(), personality: s.personality ?? rollPersonality(name + "|" + dayKey()) }))} />}
       {isDebug() && <DebugPanel life={life} setLife={setLife} />}
     </div>
   );

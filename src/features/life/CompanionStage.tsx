@@ -2,15 +2,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { LifeCorgi } from "./LifeCorgi";
 import type { Accessory, EyeState, MouthState, Pose } from "./LifeCorgi";
-import { applyHug, applyPet, applyTreat, bondLevel, clampBond, DEFAULT_HOUSE_THRESHOLDS, jackpotKind, SLEEP_STYLES, treatsLeft, TREATS_PER_DAY } from "./lifeState";
+import { anniversaryLabel, applyHug, applyPet, applyTreat, bondLevel, clampBond, DEFAULT_HOUSE_THRESHOLDS, effectiveSettleDays, jackpotKind, markPlayed, SLEEP_STYLES, STREAK_MILESTONES, treatsLeft, TREATS_PER_DAY } from "./lifeState";
 import { JackpotSlot } from "./JackpotSlot";
 import type { LifeState, MemoryKind, RareKind } from "./lifeState";
 import { markUsed as markUsedOld, pickLine as pickLineOld } from "./dialogueEngine";
 import { affectionLvOf, fillVars, hasV2Category, markUsedV2, pickTomorrowFollowup, pickV2 } from "./dialogueEngineV2";
+import { pickMemoryLine } from "./memoryLines";
+import { seasonFor } from "./seasonDecor";
+import { weekdayOf } from "./weekday";
 import type { DialogueContext } from "./dialogueEngineV2";
 import { feat } from "./features";
 import { outfitOf } from "./dressup";
 import { ClosetSheet } from "./ClosetSheet";
+import { TreasureSheet } from "./TreasureSheet";
 import { TrickSheet } from "./TrickSheet";
 import { nextLockedTrick, totalMastery } from "./tricks";
 import type { Trick } from "./tricks";
@@ -21,6 +25,7 @@ import { cachedWeather, fetchWeather } from "./weatherApi";
 import { configureSound, playSound } from "./sound";
 import { dayKey, diffDays, isFullMoon, isWeekend, monthKey, timeSlot, tokyoTime } from "./time";
 import type { CrashState } from "../tracker/logic/feast";
+import { stageOrdinal } from "../tracker/logic/roomStages";
 
 // 「生きているコーギー」の舞台。単一の requestAnimationFrame ループで
 // お出迎えダッシュ → アイドル・ステートマシン → ふれあい/演出 を駆動する。
@@ -126,6 +131,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
   const [closet, setCloset] = useState(false);
   const [brushMode, setBrushMode] = useState(false);
   const [tricks, setTricks] = useState(false);
+  const [hunt, setHunt] = useState(false);
   const [trickToast, setTrickToast] = useState<string | null>(null);
   const [milestone, setMilestone] = useState<number | null>(null); // 節目アニメ表示中の到達日数
   const [jackpot, setJackpot] = useState<{ amount: number; kind: "zorome" | "kiriban" } | null>(null);
@@ -156,7 +162,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
   const night = tt.h >= 19 || tt.h < 5;
   const weekend = isWeekend();
   const isMin = animLevel === "min";
-  const mood: MoodKind | undefined = feat("moodSystem") ? todayMood() : undefined;
+  const mood: MoodKind | undefined = feat("moodSystem") ? todayMood(Date.now(), life.personality ?? null) : undefined;
   const moodRef = useRef(mood);
   moodRef.current = mood;
   const [weather, setWeather] = useState<WeatherKind | undefined>(feat("weather") ? (cachedWeather() ?? undefined) : undefined);
@@ -189,6 +195,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
     marketTrend: valueDelta ? valueDelta.dir : undefined,
     mood: moodRef.current,
     weather: weatherRef.current,
+    personality: lifeRef.current.personality ?? undefined,
   });
 
   const showLine = (picked: { id: string; text: string } | null, dur: number, v2: boolean) => {
@@ -209,15 +216,53 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
     showLine(picked, dur, useV2);
   };
 
+  // 明日に確定しているイベント（積立日・記念日）。予告はこれと必ず整合させる：
+  // イベントがある日は確定でその予告を出し、翌日はイベント自身が発火して予告を回収する。
+  const tomorrowEventKind = (): "settle" | "anniv" | null => {
+    const s = lifeRef.current;
+    const tMs = Date.now() + 86400000;
+    const t2 = tokyoTime(tMs);
+    if ((s.settleDays ?? []).length > 0 && effectiveSettleDays(s.settleDays, t2.y, t2.mo).includes(t2.d)) return "settle";
+    if (anniversaryLabel(s.adoptedDay, dayKey(tMs))) return "anniv";
+    return null;
+  };
+
+  // 明日の予告を発話し、翌日のフォローアップ（or イベント回収）を予約する。
+  const sayTomorrowPreview = (dur = 4800) => {
+    const kind = tomorrowEventKind() ?? "generic";
+    if (kind === "settle") {
+      setBubble({ text: "そうだ、あしたは つみたての ひ！ いっしょに おいわい しようね", until: a.current.t + dur / 1000 });
+    } else if (kind === "anniv") {
+      setBubble({ text: "あした、なんだか とくべつな ひ に なる きが するんだ…ふふ", until: a.current.t + dur / 1000 });
+    } else if (feat("weekdayEvent") && Math.random() < 0.5) {
+      // 曜日イベントは毎日かならず起きるので、予告倒れしない確実なネタになる
+      const w = weekdayOf(tokyoTime(Date.now() + 86400000).dow);
+      setBubble({ text: w.preview, until: a.current.t + dur / 1000 });
+    } else {
+      say("tomorrow", undefined, dur);
+    }
+    setLife((s) => ({ ...s, pendingTomorrow: { day: dayKey(Date.now() + 86400000), kind } }));
+  };
+
   // お出迎えのあいさつ：明日の予告の消費 → さみしい再会 → 文脈に合うカテゴリを重み付き抽選。
   const sayGreeting = (dur = 4600) => {
     const s = lifeRef.current;
     if (s.pendingTomorrow && diffDays(today, s.pendingTomorrow.day) >= 0) {
-      showLine(pickTomorrowFollowup(s), dur, false);
+      const k = s.pendingTomorrow.kind ?? "generic";
       setLife((st) => ({ ...st, pendingTomorrow: null }));
-      return;
+      if (k === "generic") {
+        showLine(pickTomorrowFollowup(s), dur, false);
+        return;
+      }
+      // settle / anniv の予告は、この後キューで実イベントが発火して回収するので
+      // ここでは前置きせず通常のお出迎えに進む。
     }
     if (s.sadReunion) { say("sadReunion", undefined, dur); return; }
+    if (s.ticketUsedDay === today) {
+      setBubble({ text: "きのうは あえなかったけど、お休み券 つかっておいたよ。れんぞく つづいてるからね！", until: a.current.t + dur / 1000 });
+      setLife((st) => ({ ...st, ticketUsedDay: null }));
+      return;
+    }
     if (feat("exchangeDiary") && s.diaryReplyThanksDay && diffDays(today, s.diaryReplyThanksDay) >= 0) {
       setBubble({ text: "きのうの おへんじ、うれしかった！ ありがとう", until: a.current.t + dur / 1000 });
       setLife((st) => ({ ...st, diaryReplyThanksDay: null }));
@@ -227,8 +272,13 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
       setBubble({ text: "いちばんのり！ きょうも あえて うれしい！", until: a.current.t + dur / 1000 });
       return;
     }
+    if (feat("memoryTalk") && !firstVisitToday && Math.random() < 0.12) {
+      const mem = pickMemoryLine(s);
+      if (mem) { showLine(mem, dur, false); return; }
+    }
     const ctx = dctx();
     const cats = ["greet", "greet", "weekday", "season", "knowledge", "affection", "murmur"];
+    if (ctx.personality) cats.push("persona", "persona"); // 性格セリフ（その子らしさ）を出やすく
     if (ctx.mood) cats.push("mood", "mood");
     if (ctx.weather) cats.push("weather");
     if (ctx.streak >= 2 && Math.random() < 0.3) cats.push("streak", "streak");
@@ -240,8 +290,19 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
   // 放置中のひとりごと：独り言を中心に、豆知識・なつき度・季節・天気から。
   const sayIdle = (dur: number) => {
     const s = lifeRef.current;
+    // 夕方以降・まだ予告していなければ、放置のひとことでも明日の予告を挟む
+    // （離脱前の「また明日」フック。イベント確定日は優先度を上げる）。
+    if (feat("tomorrowPreview") && !s.pendingTomorrow && (slot === "evening" || slot === "late")) {
+      if (tomorrowEventKind() ? Math.random() < 0.5 : Math.random() < 0.15) { sayTomorrowPreview(dur); return; }
+    }
+    // ときどき、これまでの積み重ねをふり返る「記憶する会話」を挟む。
+    if (feat("memoryTalk") && Math.random() < 0.2) {
+      const mem = pickMemoryLine(s);
+      if (mem) { showLine(mem, dur, false); return; }
+    }
     const ctx = dctx();
     let cats = ["murmur", "murmur", "knowledge", "affection", "season"];
+    if (ctx.personality) cats.push("persona", "persona");
     if (ctx.mood) cats.push("mood", "mood");
     if (ctx.weather) cats.push("weather");
     if (affectionLvOf(s) >= 4 && Math.random() < 0.2) cats = ["affection"];
@@ -261,7 +322,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
     else if (isFullMoon() && night) rare = "moon";
     // 遊びに来る動物（1日1回・約55%で来訪）。7種からまんべんなく。
     let visitor: VisitorKind | null = null;
-    if (feat("visitors") && Math.random() < 0.55) {
+    if (feat("visitors") && Math.random() < (tokyoTime().dow === 6 ? 0.75 : 0.55)) {
       const kinds: VisitorKind[] = ["cat", "bird", "butterfly", "squirrel", "hedgehog", "frog", "ladybug"];
       visitor = kinds[Math.floor(Math.random() * kinds.length)];
     }
@@ -281,15 +342,39 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
       const ms = [100, 365, 500, 1000].find((m) => s.visitDayCount === m && s.milestoneShownAt < m);
       if (ms) q.push(`milestone.${ms}`);
     }
+    // レベルアップ祝福：成長ステージ（1-12）と、その先の生涯ステージ（称号）の
+    // 昇格を通し番号 stageOrdinal で判定。上がった初回訪問で1回だけ。
+    // stageCelebrated===0 は未初期化（導入前からのデータ or 新規）なので、
+    // 祝わずに現在値へ静かに合わせる（レトロ祝福の嵐を防ぐ）。
+    {
+      const { ord } = stageOrdinal(principal);
+      if ((s.stageCelebrated ?? 0) === 0) {
+        setLife((s2) => ({ ...s2, stageCelebrated: ord }));
+      } else if (ord > s.stageCelebrated) {
+        q.push("stageUp");
+      }
+    }
+    // ストリークの節目（7,14,30,…日）を跨いだ初回訪問で小さな祝福
+    {
+      const mile = [...STREAK_MILESTONES].reverse().find((m) => s.streak >= m) ?? 0;
+      if (mile > (s.streakCelebrated ?? 0)) q.push(`streakMile.${mile}`);
+    }
+    // うちのこ記念日（1週間・1か月・100日・毎年）
+    if (anniversaryLabel(s.adoptedDay, today) && s.annivShownDay !== today) q.push("anniv");
     if (s.todayRare && s.todayRare !== "rainbow") q.push(`rare.${s.todayRare}`);
     if (feat("houseUpgrade") && houseLevel > (s.lastHouseLevel ?? 0)) q.push("houseUp");
     if (feat("jackpotSlot") && !isMin) {
       const jp = jackpotKind(value) ? value : jackpotKind(principal) ? principal : 0;
       if (jp && jp !== (s.jackpotShownValue ?? 0)) q.push(`jackpot.${jp}`);
     }
-    if (s.settleDay != null && tt.d === s.settleDay && s.lastSettleMonth !== monthKey()) q.push("settle");
+    // 積立日（複数可・31日は月末に繰り上げ）。同日1回だけ発火。
+    if ((s.settleDays ?? []).length > 0 &&
+        effectiveSettleDays(s.settleDays, tt.y, tt.mo).includes(tt.d) &&
+        s.lastSettleFireDay !== today) q.push("settle");
     if (valueDelta && valueDelta.dir !== "flat") q.push(`market.${valueDelta.dir}`);
     if (feat("visitors") && s.todayVisitor && !isMin) q.push("visitor");
+    // 曜日イベントの宣言（きょうは◯◯の ひ！ 1日1回）
+    if (feat("weekdayEvent") && s.wdayShownDay !== today) q.push("wday");
     // 週1がんばったで賞：日曜の初回訪問
     if (feat("weeklyAward") && tt.dow === 0 && firstVisitToday && s.lastAwardWeek !== today) q.push("award");
     a.current.queue = q;
@@ -321,21 +406,67 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
       an.tailSpeedMul = 1.8; // うれしくてしっぽブンブン
       setTimeout(() => { a.current.tailSpeedMul = 1; }, 2600);
       an.queueWait = 4.6;
-      // 明日の予告（20%）：会話の最後に予告を差し込み、翌日フォローアップを予約
-      if (feat("tomorrowPreview") && !lifeRef.current.pendingTomorrow && Math.random() < 0.2) {
-        an.queue.push("tomorrowSay");
+      // 明日の予告：翌日にイベント（積立日・記念日）が確定していれば必ず予告し、
+      // なければ20%で汎用の楽しみセリフ。翌日フォローアップを予約する。
+      if (feat("tomorrowPreview") && !lifeRef.current.pendingTomorrow) {
+        if (tomorrowEventKind() || Math.random() < 0.2) an.queue.push("tomorrowSay");
       }
       return;
     }
     if (ev === "tomorrowSay") {
-      say("tomorrow", undefined, 4800);
-      setLife((s) => ({ ...s, pendingTomorrow: { day: dayKey(Date.now() + 86400000) } }));
+      sayTomorrowPreview(4800);
       an.queueWait = 5;
+      return;
+    }
+    if (ev === "wday") {
+      const w = weekdayOf(tt.dow);
+      setBubble({ text: `${w.emoji} きょうは ${w.label}！ ${w.line}`, until: an.t + 4.8 });
+      setLife((s) => ({ ...s, wdayShownDay: today }));
+      an.queueWait = 5.2;
+      return;
+    }
+    if (ev.startsWith("streakMile.")) {
+      const m = Number(ev.slice(11));
+      setBubble({ text: `れんぞく ${m}にち！ まいにち あえるの、ほんとに うれしいんだ`, until: an.t + 4.8 });
+      setLife((s) => ({ ...s, streakCelebrated: m }));
+      an.tailSpeedMul = 2;
+      setTimeout(() => { a.current.tailSpeedMul = 1; }, 2800);
+      if (!isMin && an.lift === 0 && an.liftV === 0) an.liftV = 150;
+      spawnHearts(2, false);
+      an.queueWait = 5.2;
+      return;
+    }
+    if (ev === "stageUp") {
+      const { ord, title } = stageOrdinal(principal);
+      const line = ord <= 12
+        ? `レベルアップ！ 「${title}」に なったよ！ もっと おおきく なるからね`
+        : `しょうかく！ きょうから 「${title}」だよ！ ここまで いっしょに きたね`;
+      setBubble({ text: line, until: an.t + 5 });
+      setLife((s) => ({ ...s, stageCelebrated: ord }));
+      if (!isMin) {
+        setConfetti(true);
+        an.fsm = "settleJump"; an.fsmT = 0; an.fsmDur = 2.2;
+        setTimeout(() => setConfetti(false), 3600);
+      }
+      playSound("fanfare");
+      an.queueWait = 5.4;
+      return;
+    }
+    if (ev === "anniv") {
+      const al = anniversaryLabel(lifeRef.current.adoptedDay, today);
+      setBubble({ text: `きょうで ${al}！ これからも ずっと いっしょだよ`, until: an.t + 5.6 });
+      setLife((s) => ({ ...s, annivShownDay: today }));
+      if (!isMin) {
+        setConfetti(true);
+        an.fsm = "settleJump"; an.fsmT = 0; an.fsmDur = 2.2;
+        setTimeout(() => setConfetti(false), 3600);
+      }
+      an.queueWait = 6;
       return;
     }
     if (ev === "settle") {
       say("settle", undefined, 5000);
-      setLife((s) => ({ ...s, lastSettleMonth: monthKey(), today: { ...s.today, settle: true } }));
+      setLife((s) => ({ ...s, lastSettleFireDay: today, lastSettleMonth: monthKey(), today: { ...s.today, settle: true } }));
       if (!isMin) {
         setConfetti(true);
         an.fsm = "settleJump"; an.fsmT = 0; an.fsmDur = 2.2;
@@ -480,7 +611,9 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
       const an = a.current;
       an.t += dt;
       const moodTail = moodRef.current === "genki" ? 1.4 : moodRef.current === "mattari" ? 0.7 : 1;
-      an.tailPhase += dt * (4 + lifeRef.current.bond / 60) * an.tailSpeedMul * moodTail * (an.fsm === "sleep" ? 0.15 : 1);
+      // 性格：やんちゃはしっぽ速め、のんびりやはゆっくり
+      const persTail = lifeRef.current.personality === "yancha" ? 1.15 : lifeRef.current.personality === "nonbiri" ? 0.85 : 1;
+      an.tailPhase += dt * (4 + lifeRef.current.bond / 60) * an.tailSpeedMul * moodTail * persTail * (an.fsm === "sleep" ? 0.15 : 1);
 
       // 入場ダッシュ（1.2秒以内）
       if (an.phase === "enter") {
@@ -513,6 +646,20 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
       const an = a.current;
       an.t += 0.5;
       an.blinkUntil = Math.random() < 0.12 ? an.t + 0.15 : an.blinkUntil;
+      // 入場は即完了扱いにする（縮小サイズで固まらないように）
+      if (an.phase === "enter") { an.enterT += 0.5; if (an.enterT >= 1.05) { an.phase = "live"; an.fsm = "idle"; an.fsmT = 0; } }
+      // 芸などの「時間で終わるポーズ」は min でも時間だけ進めて通常に戻す。
+      // これが無いと お手 などのポーズが解除されず固まる（sleep=1e9 は対象外）。
+      if (an.fsm !== "idle" && an.fsm !== "sleep" && an.fsmDur > 0 && an.fsmDur < 1e8) {
+        an.fsmT += 0.5;
+        if (an.fsmT >= an.fsmDur) { an.fsm = "idle"; an.fsmT = 0; an.trickId = null; an.xOff = 0; }
+      }
+      // ジャンプは必ず着地させる（「よし！」の芸などが liftV を入れる）
+      if (an.liftV !== 0 || an.lift > 0) {
+        an.liftV -= 0.5 * 560;
+        an.lift = Math.max(0, an.lift + an.liftV * 0.5);
+        if (an.lift === 0 && an.liftV < 0) an.liftV = 0;
+      }
       if (an.queue.length) {
         an.queueWait -= 0.5;
         if (an.queueWait <= 0) { const ev = an.queue.shift()!; runEvent(ev); }
@@ -550,7 +697,9 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
     const mk = moodRef.current;
     const actMul = mk === "genki" ? 1.9 : mk === "mattari" ? 0.5 : mk === "itazura" ? 1.5 : 1;
     const chaseMul = mk === "itazura" ? 3 : mk === "genki" ? 2 : mk === "mattari" ? 0.4 : 1;
-    const sleepAfter = mk === "mattari" ? 180 : mk === "genki" ? 420 : 300;
+    // 気分と性格で眠りやすさが変わる（のんびりやは早めにうとうと、やんちゃは寝ない）
+    const persSleep = (lifeRef.current.personality === "nonbiri" ? 0.7 : lifeRef.current.personality === "yancha" ? 1.3 : 1) * (tokyoTime().dow === 0 ? 0.85 : 1); // のんびりの ひ は眠りやすい
+    const sleepAfter = (mk === "mattari" ? 180 : mk === "genki" ? 420 : 300) * persSleep;
     const talkChance = mk === "amae" ? 0.62 : mk === "mattari" ? 0.3 : 0.4;
 
     switch (an.fsm) {
@@ -704,6 +853,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
           an.ball = null; an.xOff = 0; an.dir = 1; an.fsm = "idle"; an.fsmT = 0;
           an.lastInteract = an.t;
           if (an.lift === 0 && an.liftV === 0) an.liftV = 120; // うれしくてぴょん
+          if (tokyoTime().dow === 2) spawnHearts(1, false); // かけっこの ひ
           if (combo % 10 === 0) {
             setBubble({ text: `ボールめいじん！ ${combo}かい れんぞく！`, until: an.t + 4.2 });
             an.ballCombo = combo;
@@ -711,7 +861,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
             an.ballCombo = combo;
             say("ball", undefined, 3600);
           }
-          setLife((s) => (combo > (s.ballBestCombo || 0) ? { ...s, ballBestCombo: combo } : s));
+          setLife((s) => markPlayed(combo > (s.ballBestCombo || 0) ? { ...s, ballBestCombo: combo } : s));
         }
       }
     }
@@ -803,7 +953,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
       spawnHearts(1 + Math.floor(Math.random() * 3), false);
       if (Math.random() < 0.35) playSound("wag");
       const before = lifeRef.current.petTotal;
-      setLife(applyPet);
+      setLife((s) => applyPet(s, tt.dow === 1 ? 12 : 10));
       const after = before + 1;
       if (after % 100 === 0) {
         say("pet100", after, 5200);
@@ -868,7 +1018,10 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
       const nc = c + 1;
       if (nc >= 20) {
         if (lifeRef.current.lastBrushDay !== today) {
-          setLife((s) => ({ ...s, bond: clampBond(s.bond + 1), lastBrushDay: today, today: { ...s.today, bond: clampBond(s.bond + 1) } }));
+          const gain = tt.dow === 3 ? 2 : 1; // ブラッシングの ひ は2倍
+          setLife((s) => markPlayed({ ...s, bond: clampBond(s.bond + gain), lastBrushDay: today, today: { ...s.today, bond: clampBond(s.bond + gain) } }));
+        } else {
+          setLife(markPlayed);
         }
         say("brush", undefined, 4200);
         spawnHearts(2, false);
@@ -886,6 +1039,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
     if (an.fsm === "sleep") { an.fsm = "idle"; an.fsmT = 0; }
     an.lastInteract = an.t;
     setBubble({ text: t.line, until: an.t + 3.6 });
+    if (tokyoTime().dow === 5) spawnHearts(1, false); // げいの ひ
     // 芸ごとに見た目のはっきり違うモーションへ。バーンだけは寝る演出を流用。
     if (t.motion === "bang") {
       an.fsm = "sleep"; an.fsmT = 0; an.fsmDur = 1e9;
@@ -907,7 +1061,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
         setTrickToast(`あたらしい げい：「${nextBefore.name}」を おぼえた！`);
         setTimeout(() => setTrickToast(null), 3200);
       }
-      return { ...s, trickMastery: m };
+      return markPlayed({ ...s, trickMastery: m });
     });
   };
 
@@ -919,6 +1073,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
     an.lastInteract = an.t;
     an.tug = { t: 0, dur: 2 + Math.random() * 2, phase: "pull" };
     setBubble({ text: "つなひき、しょうぶ！", until: an.t + 1.6 });
+    setLife(markPlayed);
   };
 
   // ---- ボール遊び（フリックで投げる） ----
@@ -969,7 +1124,7 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
     if (left <= 0 || an.bone || an.fsm === "eat") return;
     wakeIfSleeping();
     an.lastInteract = an.t;
-    setLife(applyTreat);
+    setLife((s) => applyTreat(s, tt.dow === 4 ? 3 : 2));
     if (isMin) { say(left - 1 <= 0 ? "treatDone" : "treat", undefined, 4200); return; }
     an.bone = { t: 0 };
     an.fsm = "catch"; an.fsmT = 0; an.fsmDur = 2;
@@ -977,6 +1132,8 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
 
   // ---- 空の色（時間帯グラデーション） ----
   const sky = useMemo(() => skyGradient(tt.h), [tt.h]);
+  // 季節と行事の飾りつけ（日付で決まる）
+  const season = useMemo(() => seasonFor(tt.mo, tt.d), [tt.mo, tt.d]);
   const rainCount = crash ? (crash.weather === "rain" ? 24 : crash.weather === "rain2" ? 40 : crash.weather === "storm" ? 54 : 0) : 0;
   const cloudy = crash && crash.level >= 1;
 
@@ -1088,6 +1245,22 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
 
       {/* 犬の家（積立累計でグレードアップ・犬の背後） */}
       {houseLevel >= 0 && <HouseBg level={houseLevel} />}
+
+      {/* 季節と行事の飾りつけ（日付で自動。小物は地面・粒子は空から） */}
+      {season && season.props.map((pr, i) => (
+        <span key={`sp${i}`} aria-hidden style={{ position: "absolute", left: pr.left, bottom: pr.bottom, fontSize: pr.size, zIndex: 1, pointerEvents: "none", animation: pr.sway && !isMin ? `sway ${2.6 + i * 0.7}s ease-in-out infinite` : undefined }}>
+          {pr.e}
+        </span>
+      ))}
+      {season?.particles && !isMin && (
+        <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 2 }}>
+          {Array.from({ length: season.particles.count }).map((_, i) => (
+            <span key={i} style={{ position: "absolute", left: `${(i * 83) % 100}%`, top: `${-16 + (i * 29) % 36}%`, fontSize: 11 + (i % 3) * 4, animation: `petal-fall ${(season.particles!.slow ? 7 : 4.5) + (i % 5)}s linear ${(i % 7) * 1.1}s infinite`, opacity: 0 }}>
+              {season.particles!.chars[i % season.particles!.chars.length]}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* 曇り・雨（相場のお天気） */}
       {cloudy && <div style={{ position: "absolute", inset: 0, background: "rgba(120,130,150,0.28)", pointerEvents: "none" }} />}
@@ -1296,6 +1469,26 @@ export function CompanionStage({ life, setLife, level, crash, valueDelta, animLe
           style={{ position: "absolute", top: 192, left: 8, width: 40, height: 40, borderRadius: "50%", border: "2px solid #F0E0C8", background: "rgba(255,255,255,0.85)", fontSize: 19, cursor: "pointer", boxShadow: "var(--shadow-sm)", zIndex: 6, WebkitTapHighlightColor: "transparent" }}>
           🎓
         </button>
+      )}
+      {/* おやつさがしボタン */}
+      {feat("treatHunt") && (
+        <button type="button" onClick={() => setHunt(true)} aria-label="おやつさがし"
+          style={{ position: "absolute", top: 238, left: 8, width: 40, height: 40, borderRadius: "50%", border: "2px solid #F0E0C8", background: "rgba(255,255,255,0.85)", fontSize: 19, cursor: "pointer", boxShadow: "var(--shadow-sm)", zIndex: 6, WebkitTapHighlightColor: "transparent" }}>
+          🔎
+        </button>
+      )}
+      {hunt && (
+        <TreasureSheet
+          onClose={() => setHunt(false)}
+          onWin={() => {
+            setLife(markPlayed);
+            const an2 = a.current;
+            an2.lastInteract = an2.t;
+            if (an2.lift === 0 && an2.liftV === 0) an2.liftV = 170;
+            setBubble({ text: "みつけたね！ ぼくの かくしかた、まだまだだなあ", until: an2.t + 4.2 });
+            spawnHearts(2, false);
+          }}
+        />
       )}
       {tricks && <TrickSheet life={life} onClose={() => setTricks(false)} onTrick={doTrick} />}
       {trickToast && (

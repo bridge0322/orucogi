@@ -3,38 +3,20 @@ import type { Dispatch, SetStateAction } from "react";
 import { Card } from "../../design-system/Card";
 import { diaryLine, monthSummary } from "./diary";
 import { clampBond } from "./lifeState";
-import type { LifeState, MemoryKind } from "./lifeState";
+import type { LifeState } from "./lifeState";
 import { monthKey, monthOfDay, dayKey, tokyoTime } from "./time";
 import { feat } from "./features";
 import { GoalMap } from "./GoalMap";
+import { GrowthAlbum } from "./GrowthAlbum";
+import { PhotoBooth } from "./PhotoBooth";
+import { metaOf } from "./memoryMeta";
 import { letterText, prevMonthKey } from "./letters";
+import { goalForecast } from "../tracker/logic/pace";
 import type { Record_ } from "../tracker/logic/persistence";
 
 // ひとこと日記帳＋今月のわたしたち＋おもいで図鑑＋ふれあいステータス
-// ＋お散歩マップ＋月1手紙＋交換日記＋トロフィー棚。
-
-const RARE_META: Record<MemoryKind, { emoji: string; label: string }> = {
-  butterfly: { emoji: "🦋", label: "ちょうちょと かけっこ" },
-  star: { emoji: "🌠", label: "ながれぼしに おねがい" },
-  twins: { emoji: "🐶", label: "ふたごの おともだち" },
-  moon: { emoji: "🌕", label: "まんげつの とおぼえ" },
-  rainbow: { emoji: "🌈", label: "にじいろダックスフンドの ひ" },
-  visit_cat: { emoji: "🐱", label: "ねこが あそびに きた" },
-  visit_bird: { emoji: "🐦", label: "ことりが あそびに きた" },
-  visit_butterfly: { emoji: "🦋", label: "ちょうちょが あそびに きた" },
-  visit_squirrel: { emoji: "🐿️", label: "りすが あそびに きた" },
-  visit_hedgehog: { emoji: "🦔", label: "はりねずみが あそびに きた" },
-  visit_frog: { emoji: "🐸", label: "かえるが あそびに きた" },
-  visit_ladybug: { emoji: "🐞", label: "てんとうむしが あそびに きた" },
-  sleep_curl: { emoji: "😴", label: "まるまり ねんね" },
-  sleep_flat: { emoji: "😴", label: "ぺたんこ ねんね" },
-  sleep_side: { emoji: "😴", label: "よこむき ねんね" },
-  sleep_ball: { emoji: "😴", label: "まんまる ねんね" },
-  sleep_loose: { emoji: "😴", label: "だらり ねんね" },
-};
-
-// 未知のkind（将来追加）でも落ちないようにフォールバック。
-const metaOf = (k: MemoryKind) => RARE_META[k] || { emoji: "✨", label: "たのしい できごと" };
+// ＋お散歩マップ＋月1手紙＋交換日記＋トロフィー棚＋成長アルバム。
+// 図鑑ラベル（metaOf）は memoryMeta.ts に共有化。
 
 export interface DiaryScreenProps {
   life: LifeState;
@@ -44,6 +26,8 @@ export interface DiaryScreenProps {
 
 export function DiaryScreen({ life, setLife, records }: DiaryScreenProps) {
   const principal = records.length ? records[records.length - 1].principal : 0;
+  // 目標ペース予測（直近の積立ペースから到達見込みを出す）
+  const forecast = useMemo(() => goalForecast(records, life.goalAmount), [records, life.goalAmount]);
   const [openLetter, setOpenLetter] = useState<string | null>(null);
   const [replyDraft, setReplyDraft] = useState<Record<string, string>>({});
 
@@ -114,11 +98,24 @@ export function DiaryScreen({ life, setLife, records }: DiaryScreenProps) {
         ))}
       </Card>
 
-      {/* 目標進捗お散歩マップ */}
+      {/* きねん撮影 */}
+      <PhotoBooth life={life} records={records} />
+
+      {/* 成長アルバム（この子との歩みタイムライン） */}
+      <GrowthAlbum life={life} records={records} />
+
+      {/* 目標進捗お散歩マップ＋目標ペース予測 */}
       {feat("goalMap") && principal > 0 && (
         <Card elevation="sm">
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 900, fontSize: "var(--text-base)", color: "var(--text-strong)", marginBottom: 8 }}>🗺️ もくひょうへの おさんぽ</div>
           <GoalMap principal={principal} life={life} setLife={setLife} />
+          {forecast && (
+            <div style={{ marginTop: 10, fontFamily: "var(--font-body)", fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--text-muted)", textAlign: "center", lineHeight: 1.7 }}>
+              🐾 このちょうしなら、あと だいたい{" "}
+              <b style={{ color: "var(--text-brand)", fontSize: "var(--text-sm)" }}>{Math.max(1, Math.round(forecast.monthsLeft))}かげつ</b>
+              （{forecast.etaLabel}）で もくひょうに つきそうだよ！
+            </div>
+          )}
         </Card>
       )}
 
@@ -187,7 +184,7 @@ export function DiaryScreen({ life, setLife, records }: DiaryScreenProps) {
           {sum.assetNote}
         </div>
         <div style={{ marginTop: 10, textAlign: "right", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
-          あなたの ダックスフンドより 🐕
+          あなたの コーギーより 🐕
         </div>
       </Card>
 
@@ -202,7 +199,7 @@ export function DiaryScreen({ life, setLife, records }: DiaryScreenProps) {
           <Card key={d.day} elevation="sm" style={{ padding: "12px 16px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontFamily: "var(--font-number)", fontWeight: 800, fontSize: "var(--text-xs)", color: "var(--text-brand)", flex: "none" }}>{fmtDay(d.day)}</span>
-              {d.rare && <span style={{ fontSize: 13 }}>{RARE_META[d.rare].emoji}</span>}
+              {d.rare && <span style={{ fontSize: 13 }}>{metaOf(d.rare).emoji}</span>}
               {d.settle && <span style={{ fontSize: 13 }}>🎉</span>}
             </div>
             <div style={{ marginTop: 4, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "var(--text-sm)", color: "var(--text-body)", lineHeight: 1.7 }}>

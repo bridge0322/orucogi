@@ -1,6 +1,8 @@
 // 「生きているコーギー」レイヤーの状態。既存の積立データ（orucogi_personal_v1）とは
 // 別キーで保存し、既存機能を壊さない。バージョンキーを持ち将来のマイグレーションに備える。
 import { dayKey, diffDays } from "./time";
+import { rollPersonality } from "./mood";
+import type { Personality } from "./mood";
 
 export type RareKind = "butterfly" | "star" | "twins" | "moon" | "rainbow";
 
@@ -37,7 +39,7 @@ export interface DayStats {
 
 export type AnimLevel = "full" | "soft" | "min";
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 19;
 
 // 犬の家グレードの既定しきい値（積立累計額）。設定で変更可能。
 export const DEFAULT_HOUSE_THRESHOLDS = [500000, 2000000, 5000000];
@@ -72,7 +74,9 @@ export interface LifeState {
   animLevel: AnimLevel | null; // null = 端末設定（prefers-reduced-motion）に従う
   // ---- v2: DialogueEngine v2 ----
   usedLinesV2: { id: string; day: string }[]; // 30日重複回避（上限2,000 LRU）
-  pendingTomorrow: { day: string } | null;    // 明日の予告→翌日フォローアップ
+  // 明日の予告→翌日フォローアップ。kind は予告の種類（settle/anniv は翌日の実イベントを
+  // 指す確定予告で、翌日はイベント自身が発火するため followup は黙って消費する）。
+  pendingTomorrow: { day: string; kind?: "settle" | "anniv" | "generic" } | null;
   // ---- v3: Part B グループA（遊び） ----
   wardrobe: { collar: string | null; bandana: string | null; hat: string | null; shirt: string | null }; // 着せ替え装着中
   ballBestCombo: number;                 // ボール連続キャッチの最高記録
@@ -98,6 +102,29 @@ export interface LifeState {
   lettersOpened: string[];               // 開封した月の手紙 "YYYY-MM"
   awards: { week: string; kind: string; label: string }[]; // 週間表彰の履歴
   lastAwardWeek: string | null;          // 最後に表彰した週
+  // ---- v11: きょうのおねがい（1日ミッション） ----
+  playedDay: string | null;              // きょう遊んだ（ボール/芸/つなひき/ブラシ）最後の日
+  missionCheeredDay: string | null;      // ミッション達成を犬が喜んだ最後の日
+  // ---- v12: 不在シミュレーション（るすばん日記） ----
+  pendingAbsence: number | null;         // 前回来訪からの空き日数（2以上で、おかえりカードで消費）
+  // ---- v13: うちのこ記念日 ----
+  adoptedDay: string | null;             // お迎え日（オンボーディング完了日。旧データは最古の記録から推定）
+  annivShownDay: string | null;          // 記念日のお祝いをした日（同日重複防止）
+  // ---- v14: 性格 ----
+  personality: Personality | null;       // その子の個性（名前＋お迎え日から固定）
+  // ---- v15: レベルアップ祝福 ----
+  stageCelebrated: number;               // 祝福済みの成長ステージ（0=未初期化。初回訪問で現在値に合わせる）
+  // ---- v16: ストリーク節目祝福 ----
+  streakCelebrated: number;              // 祝福済みの最大節目（7,14,30,…）。マイグレーションで現状に同期
+  // ---- v17: ストリーク保険（お休み券） ----
+  restTickets: number;                   // お休み券の保有数（上限2）。月替わり後の初訪問で+1
+  ticketMonth: string | null;            // 最後に付与した月 "YYYY-MM"
+  ticketUsedDay: string | null;          // きょう券を使った報告フラグ（犬が報告して消費）
+  // ---- v18: 積立日の複数登録 ----
+  settleDays: number[];                  // 毎月の積立日（複数可・1-31）。旧 settleDay から移行。以後こちらが正
+  lastSettleFireDay: string | null;      // 積立お祝いを発火した日 "YYYY-MM-DD"（同日重複防止・複数日対応）
+  // ---- v19: 曜日イベント ----
+  wdayShownDay: string | null;           // 「きょうは◯◯の ひ」を宣言した日（1日1回）
 }
 
 const KEY = "orucogi_life_v1";
@@ -124,7 +151,101 @@ export function defaultLife(): LifeState {
     jackpotShownValue: 0,
     goalAmount: 1000000, goalReached: [], diaryReplies: {}, diaryReplyThanksDay: null,
     lettersOpened: [], awards: [], lastAwardWeek: null,
+    playedDay: null, missionCheeredDay: null,
+    pendingAbsence: null,
+    adoptedDay: null, annivShownDay: null,
+    personality: null,
+    stageCelebrated: 0,
+    streakCelebrated: 0,
+    restTickets: 0, ticketMonth: null, ticketUsedDay: null,
+    settleDays: [], lastSettleFireDay: null,
+    wdayShownDay: null,
   };
+}
+
+// その年月の日数（mo は 1-12）。
+export const daysInMonth = (y: number, mo: number) => new Date(Date.UTC(y, mo, 0)).getUTCDate();
+
+// その年月で実際にお祝いが発火する積立日。31日など「当月に存在しない日」は
+// 月末日に繰り上げる（例: 2月に31日設定 → 28日/うるう年29日）。重複は除去。
+export function effectiveSettleDays(days: number[], y: number, mo: number): number[] {
+  const dim = daysInMonth(y, mo);
+  return [...new Set(days.map((d) => Math.min(d, dim)))];
+}
+
+// ストリークの節目。ここを跨いだ初回訪問で小さな祝福を出す。
+export const STREAK_MILESTONES = [7, 14, 30, 50, 100, 200, 365, 500, 1000];
+
+// うちのこ記念日：お迎え日から 1週間・1か月・100日・毎年◯周年をお祝いする。
+export function anniversaryLabel(adoptedDay: string | null, today: string): string | null {
+  if (!adoptedDay) return null;
+  const days = diffDays(today, adoptedDay);
+  if (days === 7) return "いっしょに なって 1しゅうかん";
+  if (days === 30) return "いっしょに なって 1かげつ";
+  if (days === 100) return "うちのこ 100にちめ";
+  if (days > 0 && days % 365 === 0) return `うちのこ ${days / 365}しゅうねん`;
+  return null;
+}
+
+// るすばん日記：留守中の1日ごとの過ごし方。空き日数と犬の名前で決まり、
+// 同じ不在なら毎回おなじ内容になる（seed=空き日数）。さみしさは日数で強まる。
+const ABSENCE_ACTS = [
+  "まどの そとを みて、{name}を まってたよ",
+  "おきにいりの ばしょで まるくなって おひるね",
+  "ボールを ころがして ひとりあそび してた",
+  "ごはんの じかん、まだかな〜って そわそわ",
+  "ゆめのなかで {name}と かけっこ してた",
+  "ドアの おとが するたび、きたかも！って みにいった",
+  "ひなたぼっこ しながら {name}の こと かんがえてた",
+  "おもちゃを ぜんぶ ならべて てんけん してた",
+];
+const ABSENCE_LONELY = [
+  "ちょっぴり さみしくて、くんくん ないちゃった",
+  "まくらに くっついて、{name}の におい さがしてた",
+  "ずっと ドアの まえで まってた…",
+];
+
+export function absenceDiary(name: string, days: number): string[] {
+  const n = Math.max(2, Math.min(days, 7));
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    // 3日以上あくと、後半にさみしいエピソードを混ぜる
+    const lonely = days >= 3 && i >= n - 2 && i % 2 === 1;
+    const pool = lonely ? ABSENCE_LONELY : ABSENCE_ACTS;
+    const pick = pool[(i * 3 + days) % pool.length];
+    out.push(pick.replaceAll("{name}", name));
+  }
+  return out;
+}
+
+// 「きょうのおねがい」= 犬から毎日ねだる3つのお世話。既存の1日カウンタから導出する
+// ので専用の保存領域は要らない（撫でた回数・遊んだか・おやつ）。
+export interface MissionTask {
+  key: "pet" | "play" | "treat";
+  label: string;
+  emoji: string;
+  done: number;
+  goal: number;
+}
+
+export const PET_MISSION_GOAL = 5;
+
+export function dailyMission(s: LifeState): MissionTask[] {
+  const today = dayKey();
+  return [
+    { key: "pet", label: "なでなで", emoji: "🖐️", done: Math.min(s.today.pets, PET_MISSION_GOAL), goal: PET_MISSION_GOAL },
+    { key: "play", label: "あそぶ", emoji: "🎾", done: s.playedDay === today ? 1 : 0, goal: 1 },
+    { key: "treat", label: "おやつ", emoji: "🦴", done: Math.min(s.today.treats, 1), goal: 1 },
+  ];
+}
+
+export const missionCleared = (s: LifeState) => dailyMission(s).every((t) => t.done >= t.goal);
+export const missionCount = (s: LifeState) => dailyMission(s).filter((t) => t.done >= t.goal).length;
+
+// きょう遊んだ印をつける（ボール・芸・つなひき・ブラシ共通）
+export function markPlayed(s: LifeState): LifeState {
+  const today = dayKey();
+  return s.playedDay === today ? s : { ...s, playedDay: today };
 }
 
 // ゾロ目（全桁同じ）／キリ番（100万円単位）の判定
@@ -147,6 +268,25 @@ export function migrateLife(d: Partial<LifeState>): LifeState {
   // 着せ替えスロットに shirt を追加（旧データには無い）。欠けたスロットは null で補う。
   const w = (merged.wardrobe || {}) as Partial<LifeState["wardrobe"]>;
   merged.wardrobe = { collar: w.collar ?? null, bandana: w.bandana ?? null, hat: w.hat ?? null, shirt: w.shirt ?? null };
+  // お迎え日（v13）：旧データにはないので、残っている最古の記録から推定する。
+  if (!merged.adoptedDay && merged.onboarded) {
+    merged.adoptedDay = merged.history?.[0]?.day ?? merged.memories?.[0]?.day ?? merged.lastVisitDay ?? dayKey();
+  }
+  // 性格（v14）：まだ無い子には名前＋お迎え日から決定的に付与（もともとの個性として）。
+  if (!merged.personality && merged.onboarded) {
+    merged.personality = rollPersonality((merged.name || "") + "|" + (merged.adoptedDay || ""));
+  }
+  // 積立日（v18）：旧 settleDay（単一）を settleDays（複数）へ移行。
+  // 注意: merged は defaultLife() 由来の settleDays:[] を必ず持つため、
+  // 「保存データ d 自体に settleDays が無い」ことで初回移行を判定する（冪等）。
+  if (!Array.isArray(d.settleDays)) {
+    merged.settleDays = merged.settleDay != null ? [merged.settleDay] : [];
+  }
+  // ストリーク節目（v16）：未初期化なら「現在の連続日数以下の最大節目」に同期して
+  // 過去分のレトロ祝福を防ぐ（冪等：2回目以降は値があるので何もしない）。
+  if (!merged.streakCelebrated) {
+    merged.streakCelebrated = [...STREAK_MILESTONES].reverse().find((m) => merged.streak >= m) ?? 0;
+  }
   return merged;
 }
 
@@ -207,14 +347,28 @@ export function beginVisit(s: LifeState, now = Date.now()): LifeState {
     next.today = emptyDay(today, next.bond);
   }
 
+  // お休み券：月替わり後の初訪問で1枚付与（上限2）。
+  const nowMonth = today.slice(0, 7);
+  if (next.ticketMonth !== nowMonth) {
+    next.restTickets = Math.min(2, (next.restTickets ?? 0) + 1);
+    next.ticketMonth = nowMonth;
+  }
+
   if (next.lastVisitDay) {
     const gap = diffDays(today, next.lastVisitDay);
+    if (gap >= 2) next.pendingAbsence = gap; // るすばん日記を出す
     if (gap >= 3) {
+      // 2日以上の空きは保険適用外。責めずに寂しがるトーン（sadReunion）でリセット。
       next.bond = clampBond(next.bond - 5);
       next.sadReunion = true;
       next.streak = 1;
     } else if (gap === 1) {
       next.streak = next.streak + 1;
+    } else if (gap === 2 && (next.restTickets ?? 0) > 0) {
+      // 1日だけ空いた→お休み券を自動で1枚使ってストリーク維持。犬があとで報告する。
+      next.restTickets = next.restTickets - 1;
+      next.streak = next.streak + 1;
+      next.ticketUsedDay = today;
     } else if (gap > 1) {
       next.streak = 1;
     }
@@ -232,9 +386,9 @@ export function beginVisit(s: LifeState, now = Date.now()): LifeState {
   return next;
 }
 
-// 撫でた（なつき度は1日+10まで）
-export function applyPet(s: LifeState): LifeState {
-  const canBond = s.bondPetToday < 10;
+// 撫でた（なつき度は1日 cap まで。既定10、なでなでの ひ は12）
+export function applyPet(s: LifeState, cap = 10): LifeState {
+  const canBond = s.bondPetToday < cap;
   return {
     ...s,
     petTotal: s.petTotal + 1,
@@ -252,9 +406,9 @@ export function applyHug(s: LifeState): LifeState {
 export const TREATS_PER_DAY = 3;
 export const treatsLeft = (s: LifeState) => TREATS_PER_DAY - s.today.treats;
 
-export function applyTreat(s: LifeState): LifeState {
+export function applyTreat(s: LifeState, gain = 2): LifeState {
   if (treatsLeft(s) <= 0) return s;
-  const bond = clampBond(s.bond + 2);
+  const bond = clampBond(s.bond + gain);
   return {
     ...s, bond, treatTotal: s.treatTotal + 1,
     today: { ...s.today, treats: s.today.treats + 1, bond },
